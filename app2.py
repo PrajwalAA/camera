@@ -1,278 +1,130 @@
 import streamlit as st
-from PIL import Image, ImageFilter, ImageEnhance
-import io
-import datetime
+from PIL import Image
 import numpy as np
 from cryptography.fernet import Fernet
+import io
 
-# Set page config
-st.set_page_config(
-    page_title="Encrypted Selfie App",
-    page_icon="🔐",
-    layout="centered"
-)
-
-# Custom CSS for styling
-st.markdown("""
-<style>
-    .main {
-        background-color: #f0f2f6;
-    }
-    .stButton button {
-        background-color: #ff4b4b;
-        color: white;
-        border-radius: 10px;
-        padding: 10px 20px;
-        font-weight: bold;
-    }
-    .stDownloadButton button {
-        background-color: #00a8ff;
-        color: white;
-        border-radius: 10px;
-        padding: 10px 20px;
-        font-weight: bold;
-    }
-    h1 {
-        color: #1a1a1a;
-        text-align: center;
-    }
-    .filter-label {
-        font-size: 1.2em;
-        font-weight: bold;
-        margin-top: 20px;
-    }
-    .encryption-box {
-        background-color: #e8f4fc;
-        padding: 15px;
-        border-radius: 10px;
-        margin-bottom: 20px;
-    }
-    .decryption-box {
-        background-color: #f0e8fc;
-        padding: 15px;
-        border-radius: 10px;
-        margin-bottom: 20px;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-# Generate encryption key
-def generate_key():
+# -----------------------------------------------------------
+# Generate or load encryption key
+# -----------------------------------------------------------
+@st.cache_resource
+def get_key():
     return Fernet.generate_key()
 
-# Encrypt data
-def encrypt_data(data, key):
-    f = Fernet(key)
-    encrypted_data = f.encrypt(data.encode())
-    return encrypted_data
+fernet = Fernet(get_key())
 
-# Decrypt data
-def decrypt_data(encrypted_data, key):
-    f = Fernet(key)
-    try:
-        decrypted_data = f.decrypt(encrypted_data).decode()
-        return decrypted_data
-    except:
-        return None
+# -----------------------------------------------------------
+# Encryption / Decryption functions
+# -----------------------------------------------------------
+def encrypt_data(data: str) -> bytes:
+    """Encrypts a text string using Fernet."""
+    return fernet.encrypt(data.encode())
 
-# Embed encrypted data in image
-def embed_data_in_image(image, encrypted_data):
-    # Convert encrypted data to binary + add delimiter first
+def decrypt_data(encrypted_data: bytes) -> str:
+    """Decrypts encrypted bytes back to string."""
+    return fernet.decrypt(encrypted_data).decode()
+
+# -----------------------------------------------------------
+# Embed encrypted data into image
+# -----------------------------------------------------------
+def embed_data_in_image(image: Image.Image, encrypted_data: bytes):
+    # Convert encrypted data to binary string + delimiter
     binary_data = ''.join(format(byte, '08b') for byte in encrypted_data)
     delimiter = '1111111100000000'
     binary_data += delimiter
 
-    # Ensure image is large enough BEFORE embedding
-    width, height = image.size
-    max_data_size = width * height * 3
-    if len(binary_data) >= max_data_size:
-        st.error("Image is too small to hold encrypted data (including delimiter). Please use a larger image or shorter message.")
+    # Convert image to writable array
+    img_array = np.array(image, dtype=np.uint8)
+    flat_array = img_array.flatten().copy()
+
+    # Capacity check
+    if len(binary_data) > flat_array.size:
+        st.error("❌ Image too small to hold encrypted data (including delimiter).")
         return None
 
-    # Convert image to numpy array
-    img_array = np.array(image)
-
-    # Flatten the array
-    flat_array = img_array.flatten()
-
-    # Embed the binary data safely
+    # Embed bits safely
     for i, bit in enumerate(binary_data):
         if i >= len(flat_array):
             break
         flat_array[i] = (flat_array[i] & ~1) | int(bit)
 
-    # Reshape back to original shape
-    modified_array = flat_array.reshape(img_array.shape)
+    # Reshape back to image
+    embedded_array = flat_array.reshape(img_array.shape)
+    embedded_img = Image.fromarray(embedded_array.astype('uint8'), 'RGB')
+    return embedded_img
 
-    # Convert back to PIL Image
-    modified_image = Image.fromarray(modified_array)
-
-    return modified_image
-
-# Extract encrypted data from image
-def extract_data_from_image(image):
-    # Ensure image is in RGB format
-    if image.mode != 'RGB':
-        image = image.convert('RGB')
-
-    img_array = np.array(image)
+# -----------------------------------------------------------
+# Extract hidden data from image
+# -----------------------------------------------------------
+def extract_data_from_image(image: Image.Image):
+    img_array = np.array(image, dtype=np.uint8)
     flat_array = img_array.flatten()
 
-    # Extract LSBs
-    binary_data = ''.join([str(pixel & 1) for pixel in flat_array])
+    bits = [str(pixel & 1) for pixel in flat_array]
+    binary_data = ''.join(bits)
 
     # Find delimiter
     delimiter = '1111111100000000'
-    delimiter_pos = binary_data.find(delimiter)
-
-    if delimiter_pos == -1:
+    end_index = binary_data.find(delimiter)
+    if end_index == -1:
+        st.error("❌ No hidden data found or image corrupted.")
         return None
 
-    binary_data = binary_data[:delimiter_pos]
+    binary_data = binary_data[:end_index]
+    all_bytes = [binary_data[i:i+8] for i in range(0, len(binary_data), 8)]
+    encrypted_bytes = bytes([int(b, 2) for b in all_bytes])
+    return encrypted_bytes
 
-    # Convert binary data to bytes
-    byte_data = bytearray()
-    for i in range(0, len(binary_data), 8):
-        byte = binary_data[i:i+8]
-        if len(byte) == 8:
-            byte_data.append(int(byte, 2))
-
-    return bytes(byte_data)
-
-# App title and description
+# -----------------------------------------------------------
+# Streamlit UI
+# -----------------------------------------------------------
+st.set_page_config(page_title="🔐 Encrypted Selfie App", layout="wide")
 st.title("🔐 Encrypted Selfie App")
-st.write("Take a selfie, add encrypted metadata, and decrypt information later!")
+st.markdown("**Hide secret numbers or messages inside your images securely!**")
 
-# Tabs for different functionalities
-tab1, tab2 = st.tabs(["Capture & Encrypt", "Decrypt Image"])
+tab1, tab2 = st.tabs(["📤 Encrypt & Hide", "📥 Extract & Decrypt"])
 
-# --- Tab 1: Capture & Encrypt ---
+# ----------------- Tab 1: Embed -----------------
 with tab1:
-    img_file = st.camera_input("Take a selfie")
+    uploaded_image = st.file_uploader("Upload an Image", type=["jpg", "jpeg", "png"])
+    secret_message = st.text_input("Enter your secret message or number:")
+    if uploaded_image and secret_message:
+        image = Image.open(uploaded_image).convert("RGB")
+        st.image(image, caption="Original Image", width=300)
 
-    if img_file is not None:
-        img = Image.open(img_file)
-
-        col1, col2 = st.columns([2, 1])
-
-        with col1:
-            st.subheader("Your Selfie")
-            st.image(img, use_container_width=True)
-
-        with col2:
-            st.subheader("Filters")
-            filter_option = st.selectbox(
-                "Select a filter:",
-                ["None", "Black & White", "Vintage", "Blur", "Sharp", "Warm", "Cool"]
-            )
-
-            if filter_option == "Black & White":
-                filtered_img = img.convert("L")
-            elif filter_option == "Vintage":
-                filtered_img = img.filter(ImageFilter.SMOOTH)
-                filtered_img = ImageEnhance.Color(filtered_img).enhance(0.7)
-                filtered_img = ImageEnhance.Brightness(filtered_img).enhance(0.9)
-            elif filter_option == "Blur":
-                filtered_img = img.filter(ImageFilter.GaussianBlur(radius=2))
-            elif filter_option == "Sharp":
-                filtered_img = img.filter(ImageFilter.SHARPEN)
-            elif filter_option == "Warm":
-                filtered_img = ImageEnhance.Color(img).enhance(1.5)
-            elif filter_option == "Cool":
-                filtered_img = ImageEnhance.Color(img).enhance(0.5)
-            else:
-                filtered_img = img.copy()
-
-            st.image(filtered_img, use_container_width=True)
-
-        # Encryption section
-        st.markdown('<div class="encryption-box">', unsafe_allow_html=True)
-        st.subheader("🔒 Add Encrypted Metadata")
-
-        now = datetime.datetime.now()
-
-        col1, col2 = st.columns(2)
-        with col1:
-            selected_date = st.date_input("Date", now.date())
-        with col2:
-            selected_time = st.time_input("Time", now.time())
-
-        custom_message = st.text_input("Custom Message", "This is my encrypted selfie!")
-
-        key_option = st.radio("Encryption Key", ["Generate New Key", "Use Existing Key"])
-
-        if key_option == "Generate New Key":
-            encryption_key = generate_key()
-            st.code(encryption_key.decode(), language="text")
-            st.info("Save this key for decryption later!")
-        else:
-            key_input = st.text_input("Enter Encryption Key", type="password")
-            try:
-                encryption_key = key_input.encode()
-                Fernet(encryption_key)  # Validate key
-            except:
-                st.error("Invalid encryption key!")
-                encryption_key = None
-
-        if encryption_key:
-            serialized_data = f"Date: {selected_date.strftime('%Y-%m-%d')} | Time: {selected_time.strftime('%H:%M:%S')} | Message: {custom_message}"
-            encrypted_data = encrypt_data(serialized_data, encryption_key)
-            encrypted_img = embed_data_in_image(filtered_img, encrypted_data)
-
+        if st.button("Encrypt & Embed"):
+            encrypted_data = encrypt_data(secret_message)
+            encrypted_img = embed_data_in_image(image, encrypted_data)
             if encrypted_img:
-                st.success("Data encrypted and embedded successfully!")
+                st.success("✅ Secret embedded successfully!")
+                st.image(encrypted_img, caption="Encrypted Image", width=300)
 
-                img_byte_arr = io.BytesIO()
-                encrypted_img.save(img_byte_arr, format='PNG')
-                img_byte_arr = img_byte_arr.getvalue()
-
+                # Download button
+                buf = io.BytesIO()
+                encrypted_img.save(buf, format="PNG")
+                byte_im = buf.getvalue()
                 st.download_button(
-                    label="Download Encrypted Selfie",
-                    data=img_byte_arr,
-                    file_name="encrypted_selfie.png",
-                    mime="image/png",
-                    key="download_encrypted_button"
+                    label="⬇️ Download Encrypted Image",
+                    data=byte_im,
+                    file_name="encrypted_image.png",
+                    mime="image/png"
                 )
-        st.markdown('</div>', unsafe_allow_html=True)
 
-# --- Tab 2: Decrypt Image ---
+# ----------------- Tab 2: Extract -----------------
 with tab2:
-    st.markdown('<div class="decryption-box">', unsafe_allow_html=True)
-    st.subheader("🔓 Decrypt Image Metadata")
+    uploaded_encrypted_image = st.file_uploader("Upload Encrypted Image", type=["png", "jpg", "jpeg"])
+    if uploaded_encrypted_image:
+        enc_image = Image.open(uploaded_encrypted_image).convert("RGB")
+        st.image(enc_image, caption="Encrypted Image", width=300)
 
-    uploaded_file = st.file_uploader("Upload an encrypted image", type=["png", "jpg", "jpeg"])
-
-    if uploaded_file is not None:
-        encrypted_img = Image.open(uploaded_file)
-        st.image(encrypted_img, caption="Uploaded Encrypted Image", use_container_width=True)
-
-        key_input = st.text_input("Enter Encryption Key", type="password")
-
-        if st.button("Decrypt"):
-            if key_input:
+        if st.button("Extract & Decrypt"):
+            encrypted_bytes = extract_data_from_image(enc_image)
+            if encrypted_bytes:
                 try:
-                    encryption_key = key_input.encode()
-                    Fernet(encryption_key)  # Validate key
+                    secret_text = decrypt_data(encrypted_bytes)
+                    st.success(f"✅ Decrypted Message: {secret_text}")
+                except Exception:
+                    st.error("❌ Failed to decrypt — wrong image or corrupted data.")
 
-                    extracted_data = extract_data_from_image(encrypted_img)
-
-                    if extracted_data:
-                        decrypted_data = decrypt_data(extracted_data, encryption_key)
-
-                        if decrypted_data:
-                            st.success("Decryption successful!")
-                            st.subheader("Decrypted Metadata:")
-                            st.code(decrypted_data, language="text")
-                        else:
-                            st.error("Failed to decrypt data. Incorrect key or corrupted image.")
-                    else:
-                        st.error("No encrypted data found in the image.")
-                except:
-                    st.error("Invalid encryption key!")
-            else:
-                st.warning("Please enter an encryption key.")
-    st.markdown('</div>', unsafe_allow_html=True)
-
-# Footer
 st.markdown("---")
-st.markdown("<p style='text-align: center; color: #666;'>Made with ❤️ using Streamlit</p>", unsafe_allow_html=True)
+st.caption("Made with ❤️ using Streamlit, PIL, and Cryptography")
