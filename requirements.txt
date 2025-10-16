@@ -4,3 +4,7 @@ cryptography
 opencv-python
 numpy
 streamlit-webrtc
+libsm6
+libxrender1
+libfontconfig1
+libice6
