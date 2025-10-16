@@ -79,25 +79,18 @@ def decrypt_data(encrypted_data, key):
 
 # Embed encrypted data in image
 def embed_data_in_image(image, encrypted_data):
-    # Convert encrypted data to binary
+        # Convert encrypted data to binary + add delimiter first
     binary_data = ''.join(format(byte, '08b') for byte in encrypted_data)
+    delimiter = '1111111100000000'
+    binary_data += delimiter
     
-    # Add a delimiter to mark the end of data
-    binary_data += '1111111100000000'  # Custom delimiter
-    
-    # Ensure image is in RGB format
-    if image.mode != 'RGB':
-        image = image.convert('RGB')
-    
-    # Get image dimensions
+    # Ensure image is large enough BEFORE embedding
     width, height = image.size
-    
-    # Check if image is large enough to hold the data
-    max_data_size = width * height * 3  # 3 channels per pixel
-    if len(binary_data) > max_data_size:
-        st.error("Image is too small to hold the encrypted data. Please use a larger image or shorter message.")
+    max_data_size = width * height * 3
+    if len(binary_data) >= max_data_size:
+        st.error("Image is too small to hold encrypted data (including delimiter). Please use a larger image or shorter message.")
         return None
-    
+
     # Convert image to numpy array
     img_array = np.array(image)
     
