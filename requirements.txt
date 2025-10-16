@@ -1,4 +1,5 @@
 streamlit
 pillow
 cryptography
+opencv-python
 numpy
