@@ -1,0 +1,6 @@
+streamlit
+Pillow
+cryptography
+opencv-python
+numpy
+streamlit-webrtc
