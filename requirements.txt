@@ -1,7 +1,7 @@
 streamlit==1.39.0
 streamlit-webrtc==0.47.1
 geocoder==1.38.1
-opencv-python==4.10.0.84
+opencv-python
 Pillow==10.4.0
 numpy==1.26.4
 av==10.0.0
