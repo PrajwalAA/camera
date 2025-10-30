@@ -4,3 +4,4 @@ cryptography
 opencv-python
 numpy
 streamlit-webrtc
+geocoder
