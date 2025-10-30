@@ -1,7 +1,8 @@
 streamlit
-Pillow
-cryptography
-opencv-python
-numpy
 streamlit-webrtc
 geocoder
+opencv-python
+Pillow
+numpy
+av
+aiortc
