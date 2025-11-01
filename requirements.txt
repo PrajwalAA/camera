@@ -1,6 +1,6 @@
-streamlit==1.22.0
-streamlit-webrtc==0.44.0
-geocoder==1.38.1
-opencv-python==4.7.0.72
-pillow==9.4.0
-numpy==1.24.2
+streamlit
+Pillow
+cryptography
+opencv-python
+numpy
+streamlit-webrtc
