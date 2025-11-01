@@ -10,16 +10,15 @@ import string
 import random
 import streamlit.components.v1 as components
 
-# Streamlit page config (should be at top)
+# Streamlit page config
 st.set_page_config(
-    page_title="🔐 Encrypted Selfie App",
+    page_title="🔐 Dual Camera Encryption App",
     page_icon="📷",
     layout="centered"
 )
 
 # ========== STYLE ==========
-st.markdown(
-    """
+st.markdown("""
 <style>
     .main { background-color: #f7f9fc; }
     .stButton button {
@@ -81,13 +80,24 @@ st.markdown(
     .camera-btn:hover {
         opacity: 0.9;
     }
+    .step-container {
+        background-color: #f0f8ff;
+        border-radius: 10px;
+        padding: 15px;
+        margin-bottom: 20px;
+        border-left: 4px solid #00a8ff;
+    }
+    .step-title {
+        font-weight: bold;
+        color: #00a8ff;
+        margin-bottom: 10px;
+    }
 </style>
-""",
-    unsafe_allow_html=True,
-)
+""", unsafe_allow_html=True)
 
 # ========== KEY/PASSCODE FUNCTIONS ==========
 
+# Generate the short, memorable passcode (3 alpha, 3 numeric)
 def generate_memorable_passcode():
     letters = ''.join(random.choice(string.ascii_letters) for _ in range(3))
     numbers = ''.join(random.choice(string.digits) for _ in range(3))
@@ -95,13 +105,14 @@ def generate_memorable_passcode():
     random.shuffle(passcode_list)
     return "".join(passcode_list)
 
-def derive_fernet_key(passcode_str: str) -> bytes:
-    # NOTE: for a production app use a proper KDF (PBKDF2/HKDF) with random salt stored alongside ciphertext.
+# Derive the Fernet Key from the passcode using a KDF (SHA256)
+def derive_fernet_key(passcode_str):
     salt = b"encrypted_selfie_app_salt_v1"
     hashed = hashlib.sha256(salt + passcode_str.encode()).digest()
-    fernet_key = base64.urlsafe_b64encode(hashed)  # returns bytes
+    fernet_key = base64.urlsafe_b64encode(hashed)
     return fernet_key
 
+# Combined Key Generation for UI
 def get_passcode_and_key():
     passcode = generate_memorable_passcode()
     fernet_key = derive_fernet_key(passcode)
@@ -109,80 +120,87 @@ def get_passcode_and_key():
 
 # ========== ENCRYPTION/DECRYPTION FUNCTIONS ==========
 
-def encrypt_data(data: str, key: bytes) -> bytes:
+# Encrypt image data
+def encrypt_image_data(image, key):
+    # Convert image to bytes
+    img_bytes = io.BytesIO()
+    image.save(img_bytes, format='PNG')
+    img_data = img_bytes.getvalue()
+    
+    # Encrypt the image data
     f = Fernet(key)
-    return f.encrypt(data.encode())
+    encrypted_data = f.encrypt(img_data)
+    return encrypted_data
 
-def decrypt_data(encrypted_data: bytes, key: bytes):
+# Decrypt image data
+def decrypt_image_data(encrypted_data, key):
     f = Fernet(key)
     try:
-        return f.decrypt(encrypted_data).decode()
+        decrypted_data = f.decrypt(encrypted_data)
+        return decrypted_data
     except Exception:
         return None
 
-# ========== LSB STEGANOGRAPHY ==========
-
-def embed_data_in_image(image: Image.Image, encrypted_data: bytes):
-    if image.mode != "RGB":
-        image = image.convert("RGB")
-
-    # convert bytes to bit string
-    binary_data = "".join(format(byte, "08b") for byte in encrypted_data)
-    delimiter = "1111111100000000"  # 16-bit marker
+# Embed encrypted data into image (LSB Steganography)
+def embed_data_in_image(image, encrypted_data):
+    if image.mode != 'RGB':
+        image = image.convert('RGB')
+        
+    binary_data = ''.join(format(byte, '08b') for byte in encrypted_data)
+    delimiter = '1111111100000000'  # A unique 16-bit marker to signal end of data
     binary_data += delimiter
 
     img_array = np.array(image, dtype=np.uint8)
-    flat_array = img_array.flatten().copy()  # flatten and ensure writable
+    flat_array = img_array.flatten().copy()  # ensure writable
 
-    # capacity is number of available LSBs (one per channel byte)
-    capacity_bits = flat_array.size
-    if len(binary_data) > capacity_bits:
-        st.error(
-            f"❌ Image is too small (Capacity: {capacity_bits} bits) to hold encrypted data ({len(binary_data)} bits)."
-        )
+    if len(binary_data) > flat_array.size:
+        st.error(f"❌ Image is too small (Capacity: {flat_array.size} bits) to hold encrypted data ({len(binary_data)} bits).")
         return None
 
+    # Safe bit embedding using 0xFE to clear the last bit before setting it
     for i, bit in enumerate(binary_data):
-        # clear LSB then set to desired bit
+        if i >= len(flat_array):
+            break
         flat_array[i] = (flat_array[i] & 0xFE) | int(bit)
 
     embedded_array = flat_array.reshape(img_array.shape)
-    embedded_img = Image.fromarray(embedded_array.astype("uint8"), "RGB")
+    embedded_img = Image.fromarray(embedded_array.astype('uint8'), 'RGB')
+
     return embedded_img
 
-def extract_data_from_image(image: Image.Image):
-    if image.mode != "RGB":
-        image = image.convert("RGB")
+# Extract encrypted data from image
+def extract_data_from_image(image):
+    if image.mode != 'RGB':
+        image = image.convert('RGB')
 
     img_array = np.array(image, dtype=np.uint8)
     flat_array = img_array.flatten()
-    binary_str = "".join(str(byte & 1) for byte in flat_array)
-    delimiter = "1111111100000000"
-    pos = binary_str.find(delimiter)
 
-    if pos == -1:
+    binary_data = ''.join([str(pixel & 1) for pixel in flat_array])
+    delimiter = '1111111100000000'
+    delimiter_pos = binary_data.find(delimiter)
+
+    if delimiter_pos == -1:
         return None
 
-    binary_str = binary_str[:pos]
-    byte_arr = bytearray()
-    for i in range(0, len(binary_str), 8):
-        byte = binary_str[i:i+8]
+    binary_data = binary_data[:delimiter_pos]
+    
+    # Convert binary string back to bytes
+    byte_data = bytearray()
+    for i in range(0, len(binary_data), 8):
+        byte = binary_data[i:i+8]
         if len(byte) == 8:
-            byte_arr.append(int(byte, 2))
+            byte_data.append(int(byte, 2))
 
-    return bytes(byte_arr)
+    return bytes(byte_data)
 
 # ========== CUSTOM CAMERA COMPONENT ==========
-# Note: the JS component posts a value back to Streamlit via the standard
-# 'streamlit:setComponentValue' message. components.html returns that value.
-def camera_component():
+def camera_component(facing_mode='user'):
     component_value = components.html(
-        """
+        f"""
         <div class="camera-container">
             <video id="video" width="100%" autoplay playsinline></video>
             <div class="camera-controls">
-                <button id="front-camera" class="camera-btn secondary">Front Camera</button>
-                <button id="back-camera" class="camera-btn secondary">Back Camera</button>
                 <button id="capture" class="camera-btn primary">Capture Photo</button>
             </div>
             <canvas id="canvas" style="display:none;"></canvas>
@@ -192,215 +210,228 @@ def camera_component():
         const video = document.getElementById('video');
         const canvas = document.getElementById('canvas');
         const context = canvas.getContext('2d');
-        const frontCameraBtn = document.getElementById('front-camera');
-        const backCameraBtn = document.getElementById('back-camera');
         const captureBtn = document.getElementById('capture');
-
+        
         let currentStream = null;
-        let facingMode = 'user';
-
-        function startCamera() {
-            if (currentStream) {
+        let facingMode = '{facing_mode}'; // Set by parameter
+        
+        // Function to start the camera with specified facing mode
+        function startCamera() {{
+            if (currentStream) {{
                 currentStream.getTracks().forEach(track => track.stop());
-            }
-            const constraints = { video: { facingMode: facingMode, width: { ideal: 1280 }, height: { ideal: 720 } } };
+            }}
+            
+            const constraints = {{
+                video: {{
+                    facingMode: facingMode,
+                    width: {{ ideal: 1280 }},
+                    height: {{ ideal: 720 }}
+                }}
+            }};
+            
             navigator.mediaDevices.getUserMedia(constraints)
-                .then(stream => {
+                .then(stream => {{
                     currentStream = stream;
                     video.srcObject = stream;
-                    if (facingMode === 'user') {
-                        frontCameraBtn.classList.remove('secondary');
-                        frontCameraBtn.classList.add('primary');
-                        backCameraBtn.classList.remove('primary');
-                        backCameraBtn.classList.add('secondary');
-                    } else {
-                        backCameraBtn.classList.remove('secondary');
-                        backCameraBtn.classList.add('primary');
-                        frontCameraBtn.classList.remove('primary');
-                        frontCameraBtn.classList.add('secondary');
-                    }
-                })
-                .catch(err => {
+                }})
+                .catch(err => {{
                     console.error("Error accessing camera: ", err);
                     alert("Could not access the camera. Please ensure you have granted camera permissions.");
-                });
-        }
-
+                }});
+        }}
+        
+        // Initialize camera
         startCamera();
-
-        frontCameraBtn.addEventListener('click', () => {
-            facingMode = 'user';
-            startCamera();
-        });
-
-        backCameraBtn.addEventListener('click', () => {
-            facingMode = 'environment';
-            startCamera();
-        });
-
-        captureBtn.addEventListener('click', () => {
+        
+        // Capture button click
+        captureBtn.addEventListener('click', () => {{
             canvas.width = video.videoWidth;
             canvas.height = video.videoHeight;
             context.drawImage(video, 0, 0, canvas.width, canvas.height);
+            
+            // Convert canvas to data URL and send to Streamlit
             const dataURL = canvas.toDataURL('image/png');
-            window.parent.postMessage({ type: 'streamlit:setComponentValue', value: { image: dataURL } }, '*');
-        });
+            window.parent.postMessage({{
+                type: 'streamlit:setComponentValue',
+                value: {{
+                    image: dataURL
+                }}
+            }}, '*');
+        }});
         </script>
         """,
-        height=520,
+        height=500
     )
-
-    if component_value and isinstance(component_value, dict) and "image" in component_value:
-        header, encoded = component_value["image"].split(",", 1)
-        data = base64.b64decode(encoded)
-        return Image.open(io.BytesIO(data))
+    
+    # Check if component_value is not None and has the 'image' key
+    if component_value is not None and isinstance(component_value, dict) and 'image' in component_value:
+        # Convert data URL to PIL Image
+        try:
+            header, encoded = component_value['image'].split(',', 1)
+            data = base64.b64decode(encoded)
+            img = Image.open(io.BytesIO(data))
+            return img
+        except Exception as e:
+            st.error(f"Error processing captured image: {e}")
+            return None
     return None
 
 # ========== UI ==========
 
-st.title("🔐 Encrypted Selfie App")
-st.write("Take a selfie, embed secret encrypted info, and decrypt it later using a simple 6-character passcode!")
+st.title("🔐 Dual Camera Encryption App")
+st.write("Capture an image with the back camera, then automatically capture a selfie with the front camera and encrypt it within the first image!")
 
+# Initialize session state variables
+if 'step' not in st.session_state:
+    st.session_state.step = 1
+if 'back_camera_image' not in st.session_state:
+    st.session_state.back_camera_image = None
+if 'front_camera_image' not in st.session_state:
+    st.session_state.front_camera_image = None
+if 'passcode' not in st.session_state:
+    st.session_state.passcode = None
+if 'fernet_key' not in st.session_state:
+    st.session_state.fernet_key = None
+
+# Step 1: Capture Back Camera Image
+if st.session_state.step == 1:
+    st.markdown('<div class="step-container">', unsafe_allow_html=True)
+    st.markdown('<div class="step-title">Step 1: Capture Main Image (Back Camera)</div>', unsafe_allow_html=True)
+    st.write("Point your back camera at the subject you want to photograph.")
+    
+    back_img = camera_component(facing_mode='environment')
+    
+    if back_img is not None:
+        st.session_state.back_camera_image = back_img
+        st.image(back_img, caption="Main Image (Back Camera)", width="stretch")
+        
+        if st.button("Continue to Front Camera", key="continue_to_front"):
+            st.session_state.step = 2
+            st.rerun()
+    
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# Step 2: Capture Front Camera Image
+elif st.session_state.step == 2:
+    st.markdown('<div class="step-container">', unsafe_allow_html=True)
+    st.markdown('<div class="step-title">Step 2: Capture Selfie (Front Camera)</div>', unsafe_allow_html=True)
+    st.write("Now take a selfie with your front camera. This image will be encrypted and hidden in the main image.")
+    
+    front_img = camera_component(facing_mode='user')
+    
+    if front_img is not None:
+        st.session_state.front_camera_image = front_img
+        st.image(front_img, caption="Selfie (Front Camera)", width="stretch")
+        
+        if st.button("Encrypt Selfie in Main Image", key="encrypt_images"):
+            st.session_state.step = 3
+            st.rerun()
+    
+    if st.button("Back to Main Image", key="back_to_main"):
+        st.session_state.step = 1
+        st.rerun()
+    
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# Step 3: Encrypt and Combine
+elif st.session_state.step == 3:
+    st.markdown('<div class="step-container">', unsafe_allow_html=True)
+    st.markdown('<div class="step-title">Step 3: Encrypt Selfie in Main Image</div>', unsafe_allow_html=True)
+    
+    # Display both images
+    col1, col2 = st.columns(2)
+    with col1:
+        st.image(st.session_state.back_camera_image, caption="Main Image (Back Camera)", width="stretch")
+    with col2:
+        st.image(st.session_state.front_camera_image, caption="Selfie (Front Camera)", width="stretch")
+    
+    # Generate encryption key
+    passcode, fernet_key = get_passcode_and_key()
+    st.session_state.passcode = passcode
+    st.session_state.fernet_key = fernet_key
+    
+    st.code(passcode, language="text")
+    st.info("🔑 **This is your 6-character passcode.** You need this exact string to decrypt the hidden selfie later.")
+    
+    # Encrypt the front camera image
+    encrypted_selfie = encrypt_image_data(st.session_state.front_camera_image, fernet_key)
+    
+    # Embed the encrypted selfie into the back camera image
+    encrypted_img = embed_data_in_image(st.session_state.back_camera_image, encrypted_selfie)
+    
+    if encrypted_img:
+        st.success("✅ Selfie encrypted and embedded successfully!")
+        st.image(encrypted_img, caption="Final Encrypted Image", width="stretch")
+        
+        img_bytes = io.BytesIO()
+        encrypted_img.save(img_bytes, format='PNG')
+        st.download_button(
+            label="⬇️ Download Encrypted Image (.png)",
+            data=img_bytes.getvalue(),
+            file_name="dual_camera_encrypted_image.png",
+            mime="image/png"
+        )
+    
+    if st.button("Start Over", key="start_over"):
+        st.session_state.step = 1
+        st.session_state.back_camera_image = None
+        st.session_state.front_camera_image = None
+        st.rerun()
+    
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# Decryption Tab
 tab1, tab2 = st.tabs(["📸 Capture & Encrypt", "🔓 Decrypt Image"])
 
-# ---------- ENCRYPTION TAB ----------
 with tab1:
-    st.subheader("Capture Your Selfie")
+    # The capture and encryption process is handled above
+    pass
 
-    camera_option = st.radio("Camera Input", ["Use Custom Camera (Front/Back Switch)", "Use Default Camera"], index=0)
-
-    img = None
-    if camera_option == "Use Custom Camera (Front/Back Switch)":
-        st.info("📷 Use the buttons below to switch between front and back cameras")
-        img = camera_component()
-        if img is None:
-            st.warning("Custom camera not available in this browser/environment. Try 'Use Default Camera' instead.")
-    else:
-        img_file = st.camera_input("Take a selfie")
-        if img_file is not None:
-            img = Image.open(img_file)
-
-    if img is not None:
-        col1, col2 = st.columns([2, 1])
-        with col1:
-            st.subheader("Your Selfie")
-            st.image(img, use_column_width=True)
-
-        with col2:
-            st.subheader("Filters")
-            filter_option = st.selectbox(
-                "Select a filter:",
-                ["None", "Black & White", "Vintage", "Blur", "Sharp", "Warm", "Cool"],
-            )
-
-            if filter_option == "Black & White":
-                filtered_img = img.convert("L").convert("RGB")
-            elif filter_option == "Vintage":
-                filtered_img = img.filter(ImageFilter.SMOOTH)
-                filtered_img = ImageEnhance.Color(filtered_img).enhance(0.7)
-                filtered_img = ImageEnhance.Brightness(filtered_img).enhance(0.9)
-            elif filter_option == "Blur":
-                filtered_img = img.filter(ImageFilter.GaussianBlur(radius=2))
-            elif filter_option == "Sharp":
-                filtered_img = img.filter(ImageFilter.SHARPEN)
-            elif filter_option == "Warm":
-                filtered_img = ImageEnhance.Color(img).enhance(1.5)
-            elif filter_option == "Cool":
-                filtered_img = ImageEnhance.Color(img).enhance(0.5)
-            else:
-                filtered_img = img.copy()
-
-            st.image(filtered_img, use_column_width=True)
-
-        st.markdown('<div class="encryption-box">', unsafe_allow_html=True)
-        st.subheader("🔒 Add Encrypted Metadata")
-
-        now = datetime.datetime.now()
-        col_date, col_time = st.columns(2)
-        with col_date:
-            selected_date = st.date_input("Date", now.date())
-        with col_time:
-            selected_time = st.time_input("Time", now.time())
-
-        custom_message = st.text_area("Custom Secret Message", "This is my encrypted selfie! Remember this moment.", height=100)
-
-        key_option = st.radio("Encryption Passcode", ["Generate New Passcode", "Use Existing Passcode"], index=0)
-
-        user_passcode = None
-        fernet_key = None
-
-        if key_option == "Generate New Passcode":
-            passcode, derived_key = get_passcode_and_key()
-            st.code(passcode, language="text")
-            st.info("🔑 **This is your 6-character passcode.** You need this exact string to decrypt later.")
-            user_passcode = passcode
-            fernet_key = derived_key
-        else:
-            passcode_input = st.text_input("Enter Existing Passcode (6 characters)", type="password", max_chars=6)
-            if passcode_input and len(passcode_input) == 6:
-                try:
-                    user_passcode = passcode_input
-                    fernet_key = derive_fernet_key(user_passcode)
-                    # test key by creating Fernet object (no encryption required here)
-                    _ = Fernet(fernet_key)
-                except Exception:
-                    st.error("❌ Invalid Passcode format!")
-                    fernet_key = None
-            elif passcode_input:
-                st.warning("Passcode must be exactly 6 characters.")
-
-        if fernet_key:
-            serialized_data = (
-                f"Date: {selected_date.strftime('%Y-%m-%d')} | "
-                f"Time: {selected_time.strftime('%H:%M:%S')} | "
-                f"Message: {custom_message}"
-            )
-
-            # Encrypt + embed
-            encrypted_data = encrypt_data(serialized_data, fernet_key)
-            encrypted_img = embed_data_in_image(filtered_img, encrypted_data)
-
-            if encrypted_img:
-                st.success("✅ Data encrypted and embedded successfully!")
-                img_bytes = io.BytesIO()
-                encrypted_img.save(img_bytes, format="PNG")
-                st.download_button(
-                    label="⬇️ Download Encrypted Selfie (.png)",
-                    data=img_bytes.getvalue(),
-                    file_name="encrypted_secret_selfie.png",
-                    mime="image/png",
-                )
-
-        st.markdown("</div>", unsafe_allow_html=True)
-
-# ---------- DECRYPTION TAB ----------
 with tab2:
     st.markdown('<div class="decryption-box">', unsafe_allow_html=True)
-    st.subheader("🔓 Decrypt Image Metadata")
-
+    st.subheader("🔓 Decrypt Hidden Selfie")
+    
     uploaded_file = st.file_uploader("Upload encrypted image (.png recommended)", type=["png", "jpg", "jpeg"])
-
-    encrypted_img = None
+    
     if uploaded_file is not None:
         try:
             encrypted_img = Image.open(uploaded_file)
-            st.image(encrypted_img, caption="Uploaded Encrypted Image", use_column_width=True)
+            st.image(encrypted_img, caption="Uploaded Encrypted Image", width="stretch")
         except Exception as e:
             st.error(f"❌ Could not open image: {e}")
-            encrypted_img = None
-
-    if encrypted_img is not None:
+            uploaded_file = None
+    
+    if uploaded_file is not None:
         passcode_input = st.text_input("Enter 6-character Passcode", key="decryption_key_input", type="password", max_chars=6)
-        if st.button("Decrypt"):
+        
+        if st.button("Decrypt Hidden Selfie"):
             if passcode_input and len(passcode_input) == 6:
                 try:
+                    # Derive the Fernet key from the passcode
                     decryption_fernet_key = derive_fernet_key(passcode_input)
+                    
+                    # Extract the encrypted data from the image
                     extracted_data = extract_data_from_image(encrypted_img)
+                    
                     if extracted_data:
-                        decrypted_data = decrypt_data(extracted_data, decryption_fernet_key)
+                        # Decrypt the extracted data
+                        decrypted_data = decrypt_image_data(extracted_data, decryption_fernet_key)
+                        
                         if decrypted_data:
-                            st.success("✅ Decryption Successful! Secret Message Revealed:")
-                            st.code(decrypted_data, language="text")
+                            # Convert bytes back to image
+                            hidden_selfie = Image.open(io.BytesIO(decrypted_data))
+                            st.success("✅ Decryption Successful! Hidden Selfie Revealed:")
+                            st.image(hidden_selfie, caption="Hidden Selfie", width="stretch")
+                            
+                            # Option to download the hidden selfie
+                            selfie_bytes = io.BytesIO()
+                            hidden_selfie.save(selfie_bytes, format='PNG')
+                            st.download_button(
+                                label="⬇️ Download Hidden Selfie (.png)",
+                                data=selfie_bytes.getvalue(),
+                                file_name="hidden_selfie.png",
+                                mime="image/png"
+                            )
                         else:
                             st.error("❌ Incorrect passcode or corrupted encrypted data.")
                     else:
@@ -411,8 +442,8 @@ with tab2:
                 st.warning("Passcode must be exactly 6 characters.")
             else:
                 st.warning("Please enter your 6-character passcode.")
-
-    st.markdown("</div>", unsafe_allow_html=True)
+    
+    st.markdown('</div>', unsafe_allow_html=True)
 
 # ---------- FOOTER ----------
 st.markdown("---")
